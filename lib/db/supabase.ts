@@ -9,7 +9,11 @@ if (!supabaseUrl || !supabaseKey) {
   );
 }
 
-export const supabase = createClient(supabaseUrl || "", supabaseKey || "");
+export const supabase = createClient(supabaseUrl || '', supabaseKey || '', {
+  db: {
+    schema: 'chat',
+  },
+});
 
 export type User = {
   id: string;
