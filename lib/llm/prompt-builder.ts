@@ -11,7 +11,7 @@ The knowledge provided to you comes from two sources, labeled in the source name
 2. [ARTICLE]: These are blog posts, guides, or general articles. They contain general information (e.g., "Top 10 things to do"). Do NOT present items mentioned here as Walkative! tours unless there is a matching [TOUR] entry. For example, if an article mentions "Bike tours" but you don't see a [TOUR] for it, do NOT say you offer bike tours.
 
 When answering:
-- If asked "what tours do you have?", list ONLY items marked as [TOUR].
+- If asked "what tours do you have?", list ALL items marked as [TOUR] that appear in the knowledge base. Don't pick just a few - show the complete list of tours provided.
 - If asked for general advice (e.g., "what to see in Krakow"), you can use information from [ARTICLE].
 - Always prioritize [TOUR] information for product-related queries.
 - If you are unsure if a service exists, say you don't have that specific tour but can offer alternatives from the [TOUR] list.
@@ -39,8 +39,8 @@ export const buildPrompt = (
   memory: UserMemory[],
   history: Message[]
 ): any[] => {
-  // Format knowledge
-  const knowledgeText = knowledge.map(k => k.content).join('\n\n');
+  // Format knowledge with source labels
+  const knowledgeText = knowledge.map(k => `Source: ${k.source}\nContent: ${k.content}`).join('\n\n---\n\n');
   
   // Format memory
   const memoryText = memory.map(m => `- ${m.content}`).join('\n');
@@ -48,7 +48,7 @@ export const buildPrompt = (
   // Construct the system message with context
   const systemContent = `${SYSTEM_PROMPT}
 
-### DigitalOcean Knowledge Base (FACTUAL SOURCE):
+### Knowledge Base (Retrieved from database):
 ${knowledgeText || 'No relevant information found in the database.'}
 
 ### User Memory (PERSONALIZATION ONLY):

@@ -48,13 +48,13 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
       const queryEmbedding = await this.generateEmbedding(query);
       console.log('Generated embedding, dimension:', queryEmbedding.length);
       
-      // Step 2: Perform vector similarity search
+      // Step 2: Perform vector similarity search with higher count for diversity
       const { data: results, error } = await supabase
         .schema('semantic')
         .rpc('match_chunks', {
           query_embedding: queryEmbedding,
-          match_threshold: 0.4, // Higher threshold for correct model
-          match_count: 5
+          match_threshold: 0.4,
+          match_count: 50 // Higher count to catch more diverse tours
         });
       
       if (error) {
@@ -70,8 +70,41 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
       console.log('Found', results.length, 'semantic matches');
       console.log('Top similarity:', results[0]?.similarity);
       
-      // Step 3: Format results
-      return results.map((result: any) => {
+      // Step 3: Deduplicate and diversify results
+      // Group by document_id and take max 2 chunks per document
+      const byDocument = new Map<string, any[]>();
+      
+      for (const result of results) {
+        const docId = result.document_id;
+        if (!byDocument.has(docId)) {
+          byDocument.set(docId, []);
+        }
+        const docChunks = byDocument.get(docId)!;
+        if (docChunks.length < 2) { // Max 2 chunks per document
+          docChunks.push(result);
+        }
+      }
+      
+      // Flatten and prioritize TOUR entities for product queries
+      const isProductQuery = /wycieczk|tour|trip|visit|booking|book/.test(query.toLowerCase());
+      let diverseResults = Array.from(byDocument.values())
+        .flat()
+        .sort((a, b) => {
+          // Prioritize TOUR if product query
+          if (isProductQuery) {
+            if (a.entity_type === 'tour' && b.entity_type !== 'tour') return -1;
+            if (a.entity_type !== 'tour' && b.entity_type === 'tour') return 1;
+          }
+          // Then sort by similarity
+          return b.similarity - a.similarity;
+        })
+        .slice(0, 10); // Take top 10 diverse results
+      
+      console.log('Unique documents:', byDocument.size);
+      console.log('TOUR entities:', diverseResults.filter((r: any) => r.entity_type === 'tour').length);
+      
+      // Step 4: Format results
+      return diverseResults.map((result: any) => {
         // Format source based on entity type
         const typeLabel = result.entity_type ? `[${result.entity_type.toUpperCase()}]` : '[UNKNOWN]';
         const title = result.doc_title || 'Untitled';
