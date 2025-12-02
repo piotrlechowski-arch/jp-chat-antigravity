@@ -1,288 +1,179 @@
-import { doQuery } from '../db/digitalocean';
+import { supabase } from '../db/supabase';
+import OpenAI from 'openai';
 
-export interface KnowledgeChunk {
+export type KnowledgeChunk = {
   source: string;
   content: string;
   metadata?: any;
-}
+};
 
 export interface KnowledgeSource {
   search(query: string): Promise<KnowledgeChunk[]>;
 }
 
-export class DoPostgresKnowledgeSource implements KnowledgeSource {
+// Initialize OpenAI for embedding generation
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
+export class SupabaseKnowledgeSource implements KnowledgeSource {
   
-  // Map Polish city names (all cases) to English base form
-  private normalizePolishCityName(word: string): string {
-    const cityMap: { [key: string]: string } = {
-      // Krakow variants
-      'krakow': 'krakow', 'krakowie': 'krakow', 'krakowem': 'krakow', 'krakowa': 'krakow',
-      // Warsaw variants  
-      'warsaw': 'warsaw', 'warszawa': 'warsaw', 'warszawie': 'warsaw', 'warszawy': 'warsaw', 'warszawą': 'warsaw',
-      // Gdansk variants
-      'gdansk': 'gdansk', 'gdańsk': 'gdansk', 'gdanska': 'gdansk', 'gdańska': 'gdansk', 'gdansku': 'gdansk', 'gdańsku': 'gdansk',
-      // Wroclaw variants
-      'wroclaw': 'wroclaw', 'wrocław': 'wroclaw', 'wroclawia': 'wroclaw', 'wrocławia': 'wroclaw', 'wroclawiu': 'wroclaw', 'wrocławiu': 'wroclaw',
-      // Poznan variants
-      'poznan': 'poznan', 'poznań': 'poznan', 'poznania': 'poznan', 'poznaniu': 'poznan',
-      // Hamburg variants (Polish spelling)
-      'hamburg': 'hamburg', 'hamburgu': 'hamburg', 'hamburga': 'hamburg'
-    };
-    return cityMap[word.toLowerCase()] || word;
-  }
-  
-  // Translate common Polish keywords to English
-  private translatePolishKeyword(word: string): string[] {
-    const translations: { [key: string]: string[] } = {
-      // Tour-related
-      'wycieczka': ['tour'], 'wycieczki': ['tour', 'tours'], 'wycieczkach': ['tour', 'tours'],
-      'zwiedzanie': ['tour', 'visit'], 'zwiedzania': ['tour', 'visit'],
-      // Product-related
-      'produkt': ['product'], 'produkty': ['product', 'products'], 'produktach': ['product', 'products'],
-      'oferta': ['offer', 'product'], 'oferty': ['offer', 'product'],
-      // Article-related
-      'artykul': ['article'], 'artykuly': ['article', 'articles'], 'artykulach': ['article', 'articles'],
-      // Booking-related
-      'rezerwacja': ['booking', 'reservation'], 'rezerwacje': ['booking', 'reservation'], 'rezerwacji': ['booking', 'reservation'],
-      // Questions
-      'jakie': [], 'jaki': [], 'jaka': [], // question words - remove
-      'ile': ['how', 'many'], 'ilu': ['how', 'many'],
-      'mamy': [], 'mam': [], 'ma': [] // "we have" - remove
-    };
-    return translations[word.toLowerCase()] || [word];
-  }
-  
-  // Extract meaningful keywords from query by removing common words
-  private extractKeywords(query: string): string[] {
-    const stopWords = new Set([
-      'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-      'of', 'with', 'by', 'from', 'as', 'is', 'are', 'was', 'were', 'been',
-      'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-      'should', 'may', 'might', 'can', 'we', 'how', 'many', 'what', 'when',
-      'where', 'who', 'which', 'this', 'that', 'these', 'those',
-      // Polish stop words
-      'w', 'o', 'z', 'do', 'na', 'i', 'czy', 'jak', 'jaki', 'jakie', 'mamy', 'mam'
-    ]);
-    
-    const words = query
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(word => word.length > 2 && !stopWords.has(word));
-    
-    // Process each word: normalize cities, translate Polish keywords
-    const processedKeywords: string[] = [];
-    words.forEach(word => {
-      // Try to normalize as city first
-      const normalized = this.normalizePolishCityName(word);
-      if (normalized !== word) {
-        processedKeywords.push(normalized);
-        return;
-      }
+  /**
+   * Generate embedding for a query using OpenAI
+   */
+  private async generateEmbedding(text: string): Promise<number[]> {
+    try {
+      const response = await openai.embeddings.create({
+        model: 'text-embedding-3-small', // or text-embedding-ada-002
+        input: text,
+      });
       
-      // Try to translate Polish keyword
-      const translations = this.translatePolishKeyword(word);
-      if (translations.length > 0) {
-        processedKeywords.push(...translations);
-      } else {
-        // Keep original word if no translation
-        processedKeywords.push(word);
-      }
-    });
-    
-    // Remove duplicates and limit to 5 keywords
-    return [...new Set(processedKeywords)].slice(0, 5);
+      return response.data[0].embedding;
+    } catch (error) {
+      console.error('Error generating embedding:', error);
+      throw error;
+    }
   }
   
+  /**
+   * Search for relevant content using vector similarity
+   */
   async search(query: string): Promise<KnowledgeChunk[]> {
     try {
-      console.log('=== Knowledge Search Started ===');
+      console.log('=== Supabase Semantic Search ===');
       console.log('Query:', query);
       
-      // Extract keywords for better matching
-      const keywords = this.extractKeywords(query);
-      console.log('Extracted keywords:', keywords);
+      // Step 1: Generate embedding for the query
+      const queryEmbedding = await this.generateEmbedding(query);
+      console.log('Generated embedding, dimension:', queryEmbedding.length);
       
-      const results: KnowledgeChunk[] = [];
+      // Step 2: Perform vector similarity search
+      // Using RPC function or direct query with pgvector
+      const { data: results, error } = await supabase
+        .schema('semantic')
+        .rpc('match_chunks', {
+          query_embedding: queryEmbedding,
+          match_threshold: 0.5,
+          match_count: 5
+        });
       
-      // Build dynamic WHERE clause for keywords
-      const buildKeywordConditions = (fields: string[]): string => {
-        if (keywords.length === 0) return '1=1'; // No keywords, match all
-        
-        const conditions = keywords.map((_, idx) => {
-          return fields.map(field => `${field} ILIKE $${idx + 1}`).join(' OR ');
-        });
-        return '(' + conditions.join(') OR (') + ')';
-      };
-      
-      const keywordParams = keywords.map(kw => `%${kw}%`);
-      
-      // Strategy 1: Search products/tours by keywords
-      const productFields = [
-        'p.title_en', 'p.title',
-        'p.short_description_en', 'p.short_description',
-        'p.long_description_en', 'p.long_description',
-        'c.name_en', 'c.name'
-      ];
-      
-      const productSql = `
-        SELECT 
-          p.id,
-          p.title_en,
-          p.title,
-          p.short_description_en,
-          p.short_description,
-          p.long_description_en,
-          p.long_description,
-          p.slug_en,
-          p.slug,
-          c.name_en as city_name,
-          c.name as city_name_local
-        FROM main.products_product p
-        LEFT JOIN public.cities_city c ON p.city_id = c.id
-        WHERE ${buildKeywordConditions(productFields)}
-        LIMIT 10;
-      `;
-      
-      const productResult = await doQuery(productSql, keywordParams);
-      console.log('Product matches:', productResult.rows.length);
-      
-      productResult.rows.forEach((row: any) => {
-        results.push({
-          source: `Product: ${row.title_en || row.title}`,
-          content: `**${row.title_en || row.title}**
-Location: ${row.city_name || row.city_name_local || 'Unknown'}
-Short Description: ${row.short_description_en || row.short_description || 'N/A'}
-Full Description: ${(row.long_description_en || row.long_description || 'N/A').substring(0, 800)}`,
-          metadata: {
-            id: row.id,
-            type: 'product',
-            slug: row.slug_en || row.slug,
-            city: row.city_name || row.city_name_local
-          }
-        });
-      });
-
-      // Strategy 2: Search cities  
-      const cityFields = ['name_en', 'name', 'description_en', 'description', 'country'];
-      const citySql = `
-        SELECT 
-          id,
-          name_en,
-          name,
-          description_en,
-          description,
-          country,
-          slug_en,
-          slug
-        FROM public.cities_city
-        WHERE ${buildKeywordConditions(cityFields)}
-        LIMIT 5;
-      `;
-
-      const cityResult = await doQuery(citySql, keywordParams);
-      console.log('City matches:', cityResult.rows.length);
-
-      cityResult.rows.forEach((row: any) => {
-        results.push({
-          source: `City: ${row.name_en || row.name}`,
-          content: `**${row.name_en || row.name}**, ${row.country}
-${(row.description_en || row.description || 'No description available').substring(0, 500)}`,
-          metadata: {
-            id: row.id,
-            type: 'city',
-            slug: row.slug_en || row.slug
-          }
-        });
-      });
-
-      // Strategy 3: Get booking statistics for matching products
-      const statsFields = ['p.title_en', 'p.title', 'c.name_en', 'c.name'];
-      const statsSql = `
-        SELECT 
-          p.id,
-          p.title_en,
-          p.title,
-          COUNT(DISTINCT b.id) as total_bookings,
-          COUNT(DISTINCT bi.id) as total_participants,
-          COUNT(DISTINCT t.id) as total_tours
-        FROM main.products_product p
-        LEFT JOIN public.cities_city c ON p.city_id = c.id
-        LEFT JOIN main.tours_tour t ON t.product_id = p.id
-        LEFT JOIN main.bookings_booking b ON b.tour_id = t.id
-        LEFT JOIN main.bookings_bookingitem bi ON bi.booking_id = b.id
-        WHERE ${buildKeywordConditions(statsFields)}
-        GROUP BY p.id, p.title_en, p.title
-        HAVING COUNT(DISTINCT b.id) > 0
-        ORDER BY total_bookings DESC
-        LIMIT 5;
-      `;
-
-      const statsResult = await doQuery(statsSql, keywordParams);
-      console.log('Stats matches:', statsResult.rows.length);
-
-      statsResult.rows.forEach((row: any) => {
-        results.push({
-          source: `Booking Stats: ${row.title_en || row.title}`,
-          content: `**Booking Statistics for "${row.title_en || row.title}"**
-- Total Tours Scheduled: ${row.total_tours}
-- Total Bookings: ${row.total_bookings}
-- Total Participants: ${row.total_participants}`,
-          metadata: {
-            id: row.id,
-            type: 'stats',
-            bookings: row.total_bookings,
-            participants: row.total_participants
-          }
-        });
-      });
-
-      // Strategy 4: If query seems like "list all", get a comprehensive list
-      const lowerQuery = query.toLowerCase();
-      if (lowerQuery.includes('list') || lowerQuery.includes('all') || lowerQuery.includes('available')) {
-        const listSql = `
-          SELECT 
-            p.title_en,
-            p.title,
-            c.name_en as city_name,
-            c.name as city_name_local
-          FROM main.products_product p
-          LEFT JOIN public.cities_city c ON p.city_id = c.id
-          ORDER BY c.name_en, p.title_en
-          LIMIT 50;
-        `;
-        
-        const listResult = await doQuery(listSql, []);
-        console.log('List all results:', listResult.rows.length);
-        
-        const groupedByCity: { [key: string]: string[] } = {};
-        listResult.rows.forEach((row: any) => {
-          const city = row.city_name || row.city_name_local || 'Other';
-          if (!groupedByCity[city]) groupedByCity[city] = [];
-          groupedByCity[city].push(row.title_en || row.title);
-        });
-
-        let listContent = '**Complete Tour List**\n\n';
-        Object.entries(groupedByCity).forEach(([city, tours]) => {
-          listContent += `**${city}:**\n`;
-          tours.forEach(tour => listContent += `  - ${tour}\n`);
-          listContent += '\n';
-        });
-
-        results.push({
-          source: 'Complete Tour Catalog',
-          content: listContent,
-          metadata: { type: 'list', count: listResult.rows.length }
-        });
+      if (error) {
+        console.error('RPC match_chunks error:', error);
+        // Fallback: try direct query if RPC doesn't exist
+        return await this.searchWithDirectQuery(queryEmbedding);
       }
-
-      console.log('Total knowledge chunks:', results.length);
-      console.log('=== Knowledge Search Complete ===');
       
-      return results;
+      if (!results || results.length === 0) {
+        console.log('No results from vector search');
+        return [];
+      }
+      
+      console.log('Found', results.length, 'semantic matches');
+      
+      // Step 3: Format results
+      return results.map((result: any) => ({
+        source: `Semantic Match (${(result.similarity * 100).toFixed(1)}%)`,
+        content: result.text || result.content,
+        metadata: {
+          similarity: result.similarity,
+          chunk_id: result.chunk_id || result.id,
+          document_id: result.document_id,
+          ...result.metadata
+        }
+      }));
       
     } catch (error) {
-      console.error('Error searching DigitalOcean:', error);
+      console.error('Error in semantic search:', error);
       return [];
     }
+  }
+  
+  /**
+   * Fallback: Direct query if RPC function doesn't exist
+   */
+  private async searchWithDirectQuery(queryEmbedding: number[]): Promise<KnowledgeChunk[]> {
+    console.log('Trying direct query fallback...');
+    
+    try {
+      // Query semantic_embeddings and join with semantic_chunks
+      const { data: embeddings, error: embError } = await supabase
+        .schema('semantic')
+        .from('semantic_embeddings')
+        .select(`
+          id,
+          chunk_id,
+          embedding,
+          semantic_chunks!inner (
+            id,
+            text,
+            metadata,
+            document_id
+          )
+        `)
+        .limit(100); // Get top 100 for client-side similarity calc
+      
+      if (embError || !embeddings) {
+        console.error('Direct query error:', embError);
+        return [];
+      }
+      
+      // Calculate cosine similarity on client side
+      const withSimilarity = embeddings.map((item: any) => {
+        const similarity = this.cosineSimilarity(
+          queryEmbedding,
+          item.embedding
+        );
+        
+        return {
+          similarity,
+          text: item.semantic_chunks.text,
+          chunk_id: item.chunk_id,
+          document_id: item.semantic_chunks.document_id,
+          metadata: item.semantic_chunks.metadata
+        };
+      });
+      
+      // Sort by similarity and take top 5
+      const topMatches = withSimilarity
+        .filter(item => item.similarity > 0.5)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, 5);
+      
+      console.log('Direct query found', topMatches.length, 'matches');
+      
+      return topMatches.map(match => ({
+        source: `Semantic Match (${(match.similarity * 100).toFixed(1)}%)`,
+        content: match.text,
+        metadata: {
+          similarity: match.similarity,
+          chunk_id: match.chunk_id,
+          document_id: match.document_id,
+          ...match.metadata
+        }
+      }));
+      
+    } catch (error) {
+      console.error('Direct query fallback error:', error);
+      return [];
+    }
+  }
+  
+  /**
+   * Calculate cosine similarity between two vectors
+   */
+  private cosineSimilarity(a: number[], b: number[]): number {
+    if (a.length !== b.length) return 0;
+    
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    
+    for (let i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+    
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
   }
 }

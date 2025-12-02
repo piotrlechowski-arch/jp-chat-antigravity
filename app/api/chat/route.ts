@@ -1,14 +1,14 @@
 import { NextResponse } from 'next/server';
 import { ConversationManager } from '@/lib/conversation';
 import { MemoryManager } from '@/lib/memory';
-import { DoPostgresKnowledgeSource } from '@/lib/knowledge';
+import { SupabaseKnowledgeSource } from '@/lib/knowledge';
 import { LLMService } from '@/lib/llm';
 import { buildPrompt } from '@/lib/llm/prompt-builder';
 
 // Initialize services
 const conversationManager = new ConversationManager();
 const memoryManager = new MemoryManager();
-const knowledgeSource = new DoPostgresKnowledgeSource();
+const knowledgeSource = new SupabaseKnowledgeSource();
 const llmService = new LLMService();
 
 export async function POST(request: Request) {
