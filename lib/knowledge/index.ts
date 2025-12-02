@@ -37,6 +37,63 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
   }
   
   /**
+   * Detect city name from query
+   */
+  private detectCityFromQuery(query: string): string | null {
+    const lowerQuery = query.toLowerCase();
+    const cities: { [key: string]: string[] } = {
+      'krakow': ['krakow', 'kraków', 'krakowie', 'krakowskie'],
+      'warsaw': ['warsaw', 'warszawa', 'warszawie', 'warszawskie'],
+      'gdansk': ['gdansk', 'gdańsk', 'gdańsku'],
+      'wroclaw': ['wroclaw', 'wrocław', 'wrocławiu'],
+      'poznan': ['poznan', 'poznań', 'poznaniu'],
+    };
+    
+    for (const [city, variants] of Object.entries(cities)) {
+      if (variants.some(v => lowerQuery.includes(v))) {
+        return city;
+      }
+    }
+    return null;
+  }
+  
+  /**
+   * Fetch tours by city when semantic search fails
+   */
+  private async fetchToursByCity(cityName: string): Promise<KnowledgeChunk[]> {
+    try {
+      // Get all documents of type 'tour' that mention this city
+      const { data: documents, error } = await supabase
+        .schema('semantic')
+        .from('semantic_documents')
+        .select('id, canonical_title, canonical_description, canonical_summary')
+        .eq('entity_type', 'tour')
+        .or(`canonical_title.ilike.%${cityName}%,canonical_description.ilike.%${cityName}%,canonical_summary.ilike.%${cityName}%`)
+        .limit(10);
+      
+      if (error || !documents || documents.length === 0) {
+        console.log('No tours found for city:', cityName);
+        return [];
+      }
+      
+      console.log('Fetched', documents.length, 'tours for city:', cityName);
+      
+      return documents.map(doc => ({
+        source: `[TOUR] ${doc.canonical_title} (City Match)`,
+        content: `Title: ${doc.canonical_title}\n\nSummary: ${doc.canonical_summary || doc.canonical_description || 'No description available'}`,
+        metadata: {
+          document_id: doc.id,
+          entity_type: 'tour',
+          doc_title: doc.canonical_title
+        }
+      }));
+    } catch (error) {
+      console.error('Error fetching tours by city:', error);
+      return [];
+    }
+  }
+  
+  /**
    * Search for relevant content using vector similarity
    */
   async search(query: string): Promise<KnowledgeChunk[]> {
@@ -64,6 +121,15 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
       
       if (!results || results.length === 0) {
         console.log('No results from vector search');
+        
+        // Fallback: if query asks for tours in a city, fetch directly
+        const city = this.detectCityFromQuery(query);
+        const isTourListQuery = /list|wszystk|wycieczk|tour|mamy|oferuj/i.test(query);
+        if (city && isTourListQuery) {
+          console.log('Using city-based fallback for:', city);
+          return await this.fetchToursByCity(city);
+        }
+        
         return [];
       }
       
@@ -86,8 +152,8 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
       }
       
       // Flatten and prioritize TOUR entities for product queries
-      const isProductQuery = /wycieczk|tour|trip|visit|booking|book/.test(query.toLowerCase());
-      let diverseResults = Array.from(byDocument.values())
+      const isProductQuery = /wycieczk|tour|trip|visit|booking|book|list|wszystk|oferuj/i.test(query);
+      const diverseResults = Array.from(byDocument.values())
         .flat()
         .sort((a, b) => {
           // Prioritize TOUR if product query
@@ -102,6 +168,19 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
       
       console.log('Unique documents:', byDocument.size);
       console.log('TOUR entities:', diverseResults.filter((r: any) => r.entity_type === 'tour').length);
+      
+      // Fallback: If no TOUR entities found but query asks for tours, fetch by city
+      const tourCount = diverseResults.filter((r: any) => r.entity_type === 'tour').length;
+      if (tourCount === 0 && isProductQuery) {
+        const city = this.detectCityFromQuery(query);
+        if (city) {
+          console.log('No TOUR entities in semantic results. Using city-based fallback for:', city);
+          const cityTours = await this.fetchToursByCity(city);
+          if (cityTours.length > 0) {
+            return cityTours;
+          }
+        }
+      }
       
       // Step 4: Format results
       return diverseResults.map((result: any) => {
