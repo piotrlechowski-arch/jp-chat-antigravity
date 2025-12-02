@@ -71,16 +71,24 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
       console.log('Top similarity:', results[0]?.similarity);
       
       // Step 3: Format results
-      return results.map((result: any) => ({
-        source: `Semantic Match (${(result.similarity * 100).toFixed(1)}%)`,
-        content: result.text || result.content,
-        metadata: {
-          similarity: result.similarity,
-          chunk_id: result.chunk_id || result.id,
-          document_id: result.document_id,
-          ...result.metadata
-        }
-      }));
+      return results.map((result: any) => {
+        // Format source based on entity type
+        const typeLabel = result.entity_type ? `[${result.entity_type.toUpperCase()}]` : '[UNKNOWN]';
+        const title = result.doc_title || 'Untitled';
+        
+        return {
+          source: `${typeLabel} ${title} (${(result.similarity * 100).toFixed(1)}%)`,
+          content: result.text || result.content,
+          metadata: {
+            similarity: result.similarity,
+            chunk_id: result.chunk_id || result.id,
+            document_id: result.document_id,
+            entity_type: result.entity_type,
+            doc_title: result.doc_title,
+            ...result.metadata
+          }
+        };
+      });
       
     } catch (error) {
       console.error('Error in semantic search:', error);
