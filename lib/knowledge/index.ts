@@ -13,7 +13,83 @@ export interface KnowledgeSource {
 export class DoPostgresKnowledgeSource implements KnowledgeSource {
   async search(query: string): Promise<KnowledgeChunk[]> {
     try {
-      // Search for Products (Tours)
+      const lowerQuery = query.toLowerCase();
+      
+      // Intent: List all tours/products
+      if (lowerQuery.includes('list') && (lowerQuery.includes('tour') || lowerQuery.includes('product'))) {
+        console.log('Detected Intent: List All Tours');
+        const listSql = `
+          SELECT 
+            p.title_en,
+            p.title,
+            c.name_en as city_name
+          FROM main.products_product p
+          LEFT JOIN public.cities_city c ON p.city_id = c.id
+          WHERE p.is_active = true OR p.status = 'active' -- Assuming there's a status/active flag, if not remove
+          ORDER BY p.title_en
+          LIMIT 50;
+        `;
+        // Note: I don't see is_active in the schema, so I'll just limit to 50 for now without filter
+        const safeListSql = `
+          SELECT 
+            p.title_en,
+            p.title,
+            c.name_en as city_name
+          FROM main.products_product p
+          LEFT JOIN public.cities_city c ON p.city_id = c.id
+          ORDER BY p.title_en
+          LIMIT 50;
+        `;
+        
+        const listResult = await doQuery(safeListSql, []);
+        const listContent = listResult.rows.map((r: any) => `- ${r.title_en || r.title} (${r.city_name || 'Unknown City'})`).join('\n');
+        
+        return [{
+          source: 'DO - Tour List',
+          content: `Here is a list of up to 50 tours available:\n${listContent}`,
+          metadata: { type: 'list', count: listResult.rows.length }
+        }];
+      }
+
+      // Intent: Booking Stats
+      if (lowerQuery.includes('booking') || lowerQuery.includes('reservation') || lowerQuery.includes('how many')) {
+        console.log('Detected Intent: Booking Stats');
+        const cleanQuery = query.replace(/how many|bookings|reservations|for/gi, '').trim();
+        console.log('Cleaned Query for Stats:', cleanQuery);
+        
+        // Use LEFT JOINs to ensure we get products even with 0 bookings
+        const statsSql = `
+          SELECT 
+            p.title_en,
+            p.title,
+            COUNT(b.id) as total_bookings,
+            COUNT(bi.id) as total_participants
+          FROM main.products_product p
+          LEFT JOIN main.tours_tour t ON t.product_id = p.id
+          LEFT JOIN main.bookings_booking b ON b.tour_id = t.id
+          LEFT JOIN main.bookings_bookingitem bi ON bi.booking_id = b.id
+          WHERE 
+            p.title_en ILIKE $1 OR
+            p.title ILIKE $1
+          GROUP BY p.id, p.title_en, p.title
+          LIMIT 5;
+        `;
+        
+        const statsResult = await doQuery(statsSql, [`%${cleanQuery}%`]);
+        console.log('Stats Search Results:', statsResult.rows.length);
+        
+        if (statsResult.rows.length > 0) {
+          return statsResult.rows.map((row: any) => ({
+            source: `DO - Stats: ${row.title_en || row.title}`,
+            content: `Booking Statistics for "${row.title_en || row.title}":
+- Total Bookings: ${row.total_bookings}
+- Total Participants (approx): ${row.total_participants}`,
+            metadata: { type: 'stats', id: row.id }
+          }));
+        }
+      }
+
+      // Default Intent: Search for Products (Tours) & Cities
       const productSql = `
         SELECT 
           p.id,
