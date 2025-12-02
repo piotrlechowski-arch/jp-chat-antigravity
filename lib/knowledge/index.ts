@@ -13,83 +13,12 @@ export interface KnowledgeSource {
 export class DoPostgresKnowledgeSource implements KnowledgeSource {
   async search(query: string): Promise<KnowledgeChunk[]> {
     try {
-      const lowerQuery = query.toLowerCase();
+      console.log('=== Knowledge Search Started ===');
+      console.log('Query:', query);
       
-      // Intent: List all tours/products
-      if (lowerQuery.includes('list') && (lowerQuery.includes('tour') || lowerQuery.includes('product'))) {
-        console.log('Detected Intent: List All Tours');
-        const listSql = `
-          SELECT 
-            p.title_en,
-            p.title,
-            c.name_en as city_name
-          FROM main.products_product p
-          LEFT JOIN public.cities_city c ON p.city_id = c.id
-          WHERE p.is_active = true OR p.status = 'active' -- Assuming there's a status/active flag, if not remove
-          ORDER BY p.title_en
-          LIMIT 50;
-        `;
-        // Note: I don't see is_active in the schema, so I'll just limit to 50 for now without filter
-        const safeListSql = `
-          SELECT 
-            p.title_en,
-            p.title,
-            c.name_en as city_name
-          FROM main.products_product p
-          LEFT JOIN public.cities_city c ON p.city_id = c.id
-          ORDER BY p.title_en
-          LIMIT 50;
-        `;
-        
-        const listResult = await doQuery(safeListSql, []);
-        const listContent = listResult.rows.map((r: any) => `- ${r.title_en || r.title} (${r.city_name || 'Unknown City'})`).join('\n');
-        
-        return [{
-          source: 'DO - Tour List',
-          content: `Here is a list of up to 50 tours available:\n${listContent}`,
-          metadata: { type: 'list', count: listResult.rows.length }
-        }];
-      }
-
-      // Intent: Booking Stats
-      if (lowerQuery.includes('booking') || lowerQuery.includes('reservation') || lowerQuery.includes('how many')) {
-        console.log('Detected Intent: Booking Stats');
-        const cleanQuery = query.replace(/how many|bookings|reservations|for/gi, '').trim();
-        console.log('Cleaned Query for Stats:', cleanQuery);
-        
-        // Use LEFT JOINs to ensure we get products even with 0 bookings
-        const statsSql = `
-          SELECT 
-            p.title_en,
-            p.title,
-            COUNT(b.id) as total_bookings,
-            COUNT(bi.id) as total_participants
-          FROM main.products_product p
-          LEFT JOIN main.tours_tour t ON t.product_id = p.id
-          LEFT JOIN main.bookings_booking b ON b.tour_id = t.id
-          LEFT JOIN main.bookings_bookingitem bi ON bi.booking_id = b.id
-          WHERE 
-            p.title_en ILIKE $1 OR
-            p.title ILIKE $1
-          GROUP BY p.id, p.title_en, p.title
-          LIMIT 5;
-        `;
-        
-        const statsResult = await doQuery(statsSql, [`%${cleanQuery}%`]);
-        console.log('Stats Search Results:', statsResult.rows.length);
-        
-        if (statsResult.rows.length > 0) {
-          return statsResult.rows.map((row: any) => ({
-            source: `DO - Stats: ${row.title_en || row.title}`,
-            content: `Booking Statistics for "${row.title_en || row.title}":
-- Total Bookings: ${row.total_bookings}
-- Total Participants (approx): ${row.total_participants}`,
-            metadata: { type: 'stats', id: row.id }
-          }));
-        }
-      }
-
-      // Default Intent: Search for Products (Tours) & Cities
+      const results: KnowledgeChunk[] = [];
+      
+      // Strategy 1: Always search products/tours by text
       const productSql = `
         SELECT 
           p.id,
@@ -111,29 +40,32 @@ export class DoPostgresKnowledgeSource implements KnowledgeSource {
           p.short_description_en ILIKE $1 OR
           p.short_description ILIKE $1 OR
           p.long_description_en ILIKE $1 OR
-          p.long_description ILIKE $1
-        LIMIT 5;
+          p.long_description ILIKE $1 OR
+          c.name_en ILIKE $1 OR
+          c.name ILIKE $1
+        LIMIT 10;
       `;
       
-      console.log('Executing Product Search:', productSql.replace(/\s+/g, ' '), 'Params:', [`%${query}%`]);
       const productResult = await doQuery(productSql, [`%${query}%`]);
-      console.log('Product Search Results:', productResult.rows.length);
+      console.log('Product matches:', productResult.rows.length);
       
-      const productChunks = productResult.rows.map((row: any) => ({
-        source: `DO - Product: ${row.title_en || row.title}`,
-        content: `Title: ${row.title_en || row.title}
-City: ${row.city_name || row.city_name_local || 'Unknown'}
-Description: ${row.short_description_en || row.short_description || ''}
-Details: ${(row.long_description_en || row.long_description || '').substring(0, 500)}...`,
-        metadata: {
-          id: row.id,
-          type: 'product',
-          slug: row.slug_en || row.slug,
-          city: row.city_name || row.city_name_local
-        }
-      }));
+      productResult.rows.forEach((row: any) => {
+        results.push({
+          source: `Product: ${row.title_en || row.title}`,
+          content: `**${row.title_en || row.title}**
+Location: ${row.city_name || row.city_name_local || 'Unknown'}
+Short Description: ${row.short_description_en || row.short_description || 'N/A'}
+Full Description: ${(row.long_description_en || row.long_description || 'N/A').substring(0, 800)}`,
+          metadata: {
+            id: row.id,
+            type: 'product',
+            slug: row.slug_en || row.slug,
+            city: row.city_name || row.city_name_local
+          }
+        });
+      });
 
-      // Search for Cities
+      // Strategy 2: Search cities
       const citySql = `
         SELECT 
           id,
@@ -149,25 +81,114 @@ Details: ${(row.long_description_en || row.long_description || '').substring(0, 
           name_en ILIKE $1 OR
           name ILIKE $1 OR
           description_en ILIKE $1 OR
-          description ILIKE $1
-        LIMIT 3;
+          description ILIKE $1 OR
+          country ILIKE $1
+        LIMIT 5;
       `;
 
       const cityResult = await doQuery(citySql, [`%${query}%`]);
+      console.log('City matches:', cityResult.rows.length);
 
-      const cityChunks = cityResult.rows.map((row: any) => ({
-        source: `DO - City: ${row.name_en || row.name}`,
-        content: `City: ${row.name_en || row.name}
-Country: ${row.country}
-Description: ${(row.description_en || row.description || '').substring(0, 500)}...`,
-        metadata: {
-          id: row.id,
-          type: 'city',
-          slug: row.slug_en || row.slug
-        }
-      }));
+      cityResult.rows.forEach((row: any) => {
+        results.push({
+          source: `City: ${row.name_en || row.name}`,
+          content: `**${row.name_en || row.name}**, ${row.country}
+${(row.description_en || row.description || 'No description available').substring(0, 500)}`,
+          metadata: {
+            id: row.id,
+            type: 'city',
+            slug: row.slug_en || row.slug
+          }
+        });
+      });
 
-      return [...productChunks, ...cityChunks];
+      // Strategy 3: Get booking statistics for matching products
+      const statsSql = `
+        SELECT 
+          p.id,
+          p.title_en,
+          p.title,
+          COUNT(DISTINCT b.id) as total_bookings,
+          COUNT(DISTINCT bi.id) as total_participants,
+          COUNT(DISTINCT t.id) as total_tours
+        FROM main.products_product p
+        LEFT JOIN public.cities_city c ON p.city_id = c.id
+        LEFT JOIN main.tours_tour t ON t.product_id = p.id
+        LEFT JOIN main.bookings_booking b ON b.tour_id = t.id
+        LEFT JOIN main.bookings_bookingitem bi ON bi.booking_id = b.id
+        WHERE 
+          p.title_en ILIKE $1 OR
+          p.title ILIKE $1 OR
+          c.name_en ILIKE $1 OR
+          c.name ILIKE $1
+        GROUP BY p.id, p.title_en, p.title
+        HAVING COUNT(DISTINCT b.id) > 0
+        ORDER BY total_bookings DESC
+        LIMIT 5;
+      `;
+
+      const statsResult = await doQuery(statsSql, [`%${query}%`]);
+      console.log('Stats matches:', statsResult.rows.length);
+
+      statsResult.rows.forEach((row: any) => {
+        results.push({
+          source: `Booking Stats: ${row.title_en || row.title}`,
+          content: `**Booking Statistics for "${row.title_en || row.title}"**
+- Total Tours Scheduled: ${row.total_tours}
+- Total Bookings: ${row.total_bookings}
+- Total Participants: ${row.total_participants}`,
+          metadata: {
+            id: row.id,
+            type: 'stats',
+            bookings: row.total_bookings,
+            participants: row.total_participants
+          }
+        });
+      });
+
+      // Strategy 4: If query seems like "list all", get a comprehensive list
+      const lowerQuery = query.toLowerCase();
+      if (lowerQuery.includes('list') || lowerQuery.includes('all') || lowerQuery.includes('available')) {
+        const listSql = `
+          SELECT 
+            p.title_en,
+            p.title,
+            c.name_en as city_name,
+            c.name as city_name_local
+          FROM main.products_product p
+          LEFT JOIN public.cities_city c ON p.city_id = c.id
+          ORDER BY c.name_en, p.title_en
+          LIMIT 50;
+        `;
+        
+        const listResult = await doQuery(listSql, []);
+        console.log('List all results:', listResult.rows.length);
+        
+        const groupedByCity: { [key: string]: string[] } = {};
+        listResult.rows.forEach((row: any) => {
+          const city = row.city_name || row.city_name_local || 'Other';
+          if (!groupedByCity[city]) groupedByCity[city] = [];
+          groupedByCity[city].push(row.title_en || row.title);
+        });
+
+        let listContent = '**Complete Tour List**\n\n';
+        Object.entries(groupedByCity).forEach(([city, tours]) => {
+          listContent += `**${city}:**\n`;
+          tours.forEach(tour => listContent += `  - ${tour}\n`);
+          listContent += '\n';
+        });
+
+        results.push({
+          source: 'Complete Tour Catalog',
+          content: listContent,
+          metadata: { type: 'list', count: listResult.rows.length }
+        });
+      }
+
+      console.log('Total knowledge chunks:', results.length);
+      console.log('=== Knowledge Search Complete ===');
+      
+      return results;
       
     } catch (error) {
       console.error('Error searching DigitalOcean:', error);
