@@ -12,43 +12,75 @@ export interface KnowledgeSource {
 
 export class DoPostgresKnowledgeSource implements KnowledgeSource {
   async search(query: string): Promise<KnowledgeChunk[]> {
-    // This is a placeholder for the actual search logic.
-    // In a real scenario, we would use full-text search or vector search.
-    // For now, we'll assume a simple ILIKE search on a hypothetical 'tours' table
-    // just to demonstrate the flow, as per the spec requirements to use DO as source.
-    
-    // Note: The spec mentions tables like tours, tours_i18n, cities, etc.
-    // We will try to search across a few key tables if they exist.
-    // Since we don't know the exact schema details beyond the table names,
-    // we will implement a generic search or a specific one based on assumptions.
-    
-    // Let's assume we search for tours that match the query.
-    
-    const sql = `
-      SELECT 
-        t.id, 
-        t.slug,
-        ti.title, 
-        ti.description 
-      FROM tours t
-      JOIN tours_i18n ti ON t.id = ti.tour_id
-      WHERE 
-        ti.title ILIKE $1 OR 
-        ti.description ILIKE $1
-      LIMIT 5;
-    `;
-    
     try {
-      const result = await doQuery(sql, [`%${query}%`]);
+      // First, try to use the RAG unified documents table (already has embeddings and unified text)
+      const ragSql = `
+        SELECT 
+          id,
+          source_table,
+          source_record_id,
+          unified_text,
+          primary_language,
+          metadata
+        FROM main.rag_unified_documents
+        WHERE unified_text ILIKE $1
+        LIMIT 10;
+      `;
+      
+      let result = await doQuery(ragSql, [`%${query}%`]);
+      
+      if (result.rows.length > 0) {
+        return result.rows.map((row: any) => ({
+          source: `DO - ${row.source_table} (${row.primary_language})`,
+          content: row.unified_text.substring(0, 1000), // Limit content length
+          metadata: {
+            id: row.id,
+            source_table: row.source_table,
+            source_record_id: row.source_record_id,
+            language: row.primary_language,
+            ...row.metadata
+          }
+        }));
+      }
+      
+      // Fallback: search products directly if RAG doesn't return results
+      const productSql = `
+        SELECT 
+          id,
+          title_en,
+          title,
+          short_description_en,
+          short_description,
+          long_description_en,
+          long_description,
+          city_id,
+          slug_en,
+          slug
+        FROM main.products_product
+        WHERE 
+          title_en ILIKE $1 OR
+          title ILIKE $1 OR
+          short_description_en ILIKE $1 OR
+          short_description ILIKE $1 OR
+          long_description_en ILIKE $1 OR
+          long_description ILIKE $1
+        LIMIT 5;
+      `;
+      
+      result = await doQuery(productSql, [`%${query}%`]);
       
       return result.rows.map((row: any) => ({
-        source: `DigitalOcean - Tour: ${row.title}`,
-        content: `Tour Title: ${row.title}\nDescription: ${row.description}\nID: ${row.id}`,
-        metadata: { id: row.id, slug: row.slug }
+        source: `DO - Product: ${row.title_en || row.title}`,
+        content: `Title: ${row.title_en || row.title}\n\n${row.short_description_en || row.short_description || ''}\n\n${(row.long_description_en || row.long_description || '').substring(0, 500)}`,
+        metadata: {
+          id: row.id,
+          slug: row.slug_en || row.slug,
+          city_id: row.city_id
+        }
       }));
+      
     } catch (error) {
       console.error('Error searching DigitalOcean:', error);
-      // Fallback or empty result if table doesn't exist or query fails
       return [];
     }
   }

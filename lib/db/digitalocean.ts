@@ -2,14 +2,15 @@ import { Pool } from 'pg';
 
 const pool = new Pool({
   host: process.env.DO_DB_HOST,
-  port: parseInt(process.env.DO_DB_PORT || '5432'),
+  port: parseInt(process.env.DO_DB_PORT || '25060'),
   user: process.env.DO_DB_USER,
   password: process.env.DO_DB_PASSWORD,
   database: process.env.DO_DB_NAME,
-  ssl: {
-    rejectUnauthorized: false, // Often needed for managed databases
+  // SSL configuration - required for DigitalOcean managed databases
+  ssl: process.env.DO_DB_SSL === 'false' ? false : {
+    rejectUnauthorized: false,
   },
-  max: 10, // Connection pool size
+  max: 10,
   idleTimeoutMillis: 30000,
 });
 
