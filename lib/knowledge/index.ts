@@ -1,5 +1,5 @@
 import { supabase } from '../db/supabase';
-import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export type KnowledgeChunk = {
   source: string;
@@ -11,27 +11,27 @@ export interface KnowledgeSource {
   search(query: string): Promise<KnowledgeChunk[]>;
 }
 
-// Initialize OpenAI for embedding generation
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+// Initialize Google Generative AI
+// Note: Requires GOOGLE_API_KEY in .env.local
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
+const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
 
 export class SupabaseKnowledgeSource implements KnowledgeSource {
   
   /**
-   * Generate embedding for a query using OpenAI
+   * Generate embedding for a query using Google Gemini
    */
   private async generateEmbedding(text: string): Promise<number[]> {
     try {
-      const response = await openai.embeddings.create({
-        model: 'text-embedding-3-small', // trying small model
-        input: text,
-        dimensions: 768, // reduced dimensions
-      });
-      
-      return response.data[0].embedding;
+      if (!process.env.GOOGLE_API_KEY) {
+        throw new Error('GOOGLE_API_KEY is missing in environment variables');
+      }
+
+      const result = await model.embedContent(text);
+      const embedding = result.embedding;
+      return embedding.values;
     } catch (error) {
-      console.error('Error generating embedding:', error);
+      console.error('Error generating embedding with Gemini:', error);
       throw error;
     }
   }
@@ -41,7 +41,7 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
    */
   async search(query: string): Promise<KnowledgeChunk[]> {
     try {
-      console.log('=== Supabase Semantic Search ===');
+      console.log('=== Supabase Semantic Search (Gemini) ===');
       console.log('Query:', query);
       
       // Step 1: Generate embedding for the query
@@ -49,23 +49,21 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
       console.log('Generated embedding, dimension:', queryEmbedding.length);
       
       // Step 2: Perform vector similarity search
-      // Using RPC function or direct query with pgvector
       const { data: results, error } = await supabase
         .schema('semantic')
         .rpc('match_chunks', {
           query_embedding: queryEmbedding,
-          match_threshold: 0.01, // Lower threshold to debug model mismatch
+          match_threshold: 0.4, // Higher threshold for correct model
           match_count: 5
         });
       
       if (error) {
         console.error('RPC match_chunks error:', error);
-        // Fallback: try direct query if RPC doesn't exist
         return await this.searchWithDirectQuery(queryEmbedding);
       }
       
       if (!results || results.length === 0) {
-        console.log('No results from vector search (even with low threshold)');
+        console.log('No results from vector search');
         return [];
       }
       
@@ -137,7 +135,7 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
       
       // Sort by similarity and take top 5
       const topMatches = withSimilarity
-        .filter(item => item.similarity > 0.5)
+        .filter(item => item.similarity > 0.4)
         .sort((a, b) => b.similarity - a.similarity)
         .slice(0, 5);
       
