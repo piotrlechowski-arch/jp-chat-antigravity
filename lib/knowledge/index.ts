@@ -54,7 +54,7 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
         .schema('semantic')
         .rpc('match_chunks', {
           query_embedding: queryEmbedding,
-          match_threshold: 0.5,
+          match_threshold: 0.01, // Lower threshold to debug model mismatch
           match_count: 5
         });
       
@@ -65,11 +65,12 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
       }
       
       if (!results || results.length === 0) {
-        console.log('No results from vector search');
+        console.log('No results from vector search (even with low threshold)');
         return [];
       }
       
       console.log('Found', results.length, 'semantic matches');
+      console.log('Top similarity:', results[0]?.similarity);
       
       // Step 3: Format results
       return results.map((result: any) => ({
