@@ -13,6 +13,25 @@ export class ConversationManager {
       if (data) return data;
     }
 
+    // Ensure user exists first
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', userId)
+      .single();
+
+    if (!existingUser) {
+      // Create user if doesn't exist
+      const { error: userError } = await supabase
+        .from('users')
+        .insert({ id: userId });
+
+      if (userError) {
+        console.error('Error creating user:', userError);
+        return null;
+      }
+    }
+
     // Otherwise create a new one
     const { data, error } = await supabase
       .from('conversations')
