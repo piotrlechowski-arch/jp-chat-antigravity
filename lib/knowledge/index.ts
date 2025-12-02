@@ -24,9 +24,9 @@ export class SupabaseKnowledgeSource implements KnowledgeSource {
   private async generateEmbedding(text: string): Promise<number[]> {
     try {
       const response = await openai.embeddings.create({
-        model: 'text-embedding-3-large', // matches database embeddings
+        model: 'text-embedding-3-large',
         input: text,
-        dimensions: 769, // exact match with DB
+        dimensions: 768, // standard for text-embedding-3-large
       });
       
       return response.data[0].embedding;
