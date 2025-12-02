@@ -12,6 +12,46 @@ export interface KnowledgeSource {
 
 export class DoPostgresKnowledgeSource implements KnowledgeSource {
   
+  // Map Polish city names (all cases) to English base form
+  private normalizePolishCityName(word: string): string {
+    const cityMap: { [key: string]: string } = {
+      // Krakow variants
+      'krakow': 'krakow', 'krakowie': 'krakow', 'krakowem': 'krakow', 'krakowa': 'krakow',
+      // Warsaw variants  
+      'warsaw': 'warsaw', 'warszawa': 'warsaw', 'warszawie': 'warsaw', 'warszawy': 'warsaw', 'warszawą': 'warsaw',
+      // Gdansk variants
+      'gdansk': 'gdansk', 'gdańsk': 'gdansk', 'gdanska': 'gdansk', 'gdańska': 'gdansk', 'gdansku': 'gdansk', 'gdańsku': 'gdansk',
+      // Wroclaw variants
+      'wroclaw': 'wroclaw', 'wrocław': 'wroclaw', 'wroclawia': 'wroclaw', 'wrocławia': 'wroclaw', 'wroclawiu': 'wroclaw', 'wrocławiu': 'wroclaw',
+      // Poznan variants
+      'poznan': 'poznan', 'poznań': 'poznan', 'poznania': 'poznan', 'poznaniu': 'poznan',
+      // Hamburg variants (Polish spelling)
+      'hamburg': 'hamburg', 'hamburgu': 'hamburg', 'hamburga': 'hamburg'
+    };
+    return cityMap[word.toLowerCase()] || word;
+  }
+  
+  // Translate common Polish keywords to English
+  private translatePolishKeyword(word: string): string[] {
+    const translations: { [key: string]: string[] } = {
+      // Tour-related
+      'wycieczka': ['tour'], 'wycieczki': ['tour', 'tours'], 'wycieczkach': ['tour', 'tours'],
+      'zwiedzanie': ['tour', 'visit'], 'zwiedzania': ['tour', 'visit'],
+      // Product-related
+      'produkt': ['product'], 'produkty': ['product', 'products'], 'produktach': ['product', 'products'],
+      'oferta': ['offer', 'product'], 'oferty': ['offer', 'product'],
+      // Article-related
+      'artykul': ['article'], 'artykuly': ['article', 'articles'], 'artykulach': ['article', 'articles'],
+      // Booking-related
+      'rezerwacja': ['booking', 'reservation'], 'rezerwacje': ['booking', 'reservation'], 'rezerwacji': ['booking', 'reservation'],
+      // Questions
+      'jakie': [], 'jaki': [], 'jaka': [], // question words - remove
+      'ile': ['how', 'many'], 'ilu': ['how', 'many'],
+      'mamy': [], 'mam': [], 'ma': [] // "we have" - remove
+    };
+    return translations[word.toLowerCase()] || [word];
+  }
+  
   // Extract meaningful keywords from query by removing common words
   private extractKeywords(query: string): string[] {
     const stopWords = new Set([
@@ -19,14 +59,38 @@ export class DoPostgresKnowledgeSource implements KnowledgeSource {
       'of', 'with', 'by', 'from', 'as', 'is', 'are', 'was', 'were', 'been',
       'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
       'should', 'may', 'might', 'can', 'we', 'how', 'many', 'what', 'when',
-      'where', 'who', 'which', 'this', 'that', 'these', 'those'
+      'where', 'who', 'which', 'this', 'that', 'these', 'those',
+      // Polish stop words
+      'w', 'o', 'z', 'do', 'na', 'i', 'czy', 'jak', 'jaki', 'jakie', 'mamy', 'mam'
     ]);
     
-    return query
+    const words = query
       .toLowerCase()
       .split(/\s+/)
-      .filter(word => word.length > 2 && !stopWords.has(word))
-      .slice(0, 5); // Limit to 5 most important keywords
+      .filter(word => word.length > 2 && !stopWords.has(word));
+    
+    // Process each word: normalize cities, translate Polish keywords
+    const processedKeywords: string[] = [];
+    words.forEach(word => {
+      // Try to normalize as city first
+      const normalized = this.normalizePolishCityName(word);
+      if (normalized !== word) {
+        processedKeywords.push(normalized);
+        return;
+      }
+      
+      // Try to translate Polish keyword
+      const translations = this.translatePolishKeyword(word);
+      if (translations.length > 0) {
+        processedKeywords.push(...translations);
+      } else {
+        // Keep original word if no translation
+        processedKeywords.push(word);
+      }
+    });
+    
+    // Remove duplicates and limit to 5 keywords
+    return [...new Set(processedKeywords)].slice(0, 5);
   }
   
   async search(query: string): Promise<KnowledgeChunk[]> {
