@@ -11,14 +11,55 @@ export interface KnowledgeSource {
 }
 
 export class DoPostgresKnowledgeSource implements KnowledgeSource {
+  
+  // Extract meaningful keywords from query by removing common words
+  private extractKeywords(query: string): string[] {
+    const stopWords = new Set([
+      'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+      'of', 'with', 'by', 'from', 'as', 'is', 'are', 'was', 'were', 'been',
+      'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+      'should', 'may', 'might', 'can', 'we', 'how', 'many', 'what', 'when',
+      'where', 'who', 'which', 'this', 'that', 'these', 'those'
+    ]);
+    
+    return query
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(word => word.length > 2 && !stopWords.has(word))
+      .slice(0, 5); // Limit to 5 most important keywords
+  }
+  
   async search(query: string): Promise<KnowledgeChunk[]> {
     try {
       console.log('=== Knowledge Search Started ===');
       console.log('Query:', query);
       
+      // Extract keywords for better matching
+      const keywords = this.extractKeywords(query);
+      console.log('Extracted keywords:', keywords);
+      
       const results: KnowledgeChunk[] = [];
       
-      // Strategy 1: Always search products/tours by text
+      // Build dynamic WHERE clause for keywords
+      const buildKeywordConditions = (fields: string[]): string => {
+        if (keywords.length === 0) return '1=1'; // No keywords, match all
+        
+        const conditions = keywords.map((_, idx) => {
+          return fields.map(field => `${field} ILIKE $${idx + 1}`).join(' OR ');
+        });
+        return '(' + conditions.join(') OR (') + ')';
+      };
+      
+      const keywordParams = keywords.map(kw => `%${kw}%`);
+      
+      // Strategy 1: Search products/tours by keywords
+      const productFields = [
+        'p.title_en', 'p.title',
+        'p.short_description_en', 'p.short_description',
+        'p.long_description_en', 'p.long_description',
+        'c.name_en', 'c.name'
+      ];
+      
       const productSql = `
         SELECT 
           p.id,
@@ -34,19 +75,11 @@ export class DoPostgresKnowledgeSource implements KnowledgeSource {
           c.name as city_name_local
         FROM main.products_product p
         LEFT JOIN public.cities_city c ON p.city_id = c.id
-        WHERE 
-          p.title_en ILIKE $1 OR
-          p.title ILIKE $1 OR
-          p.short_description_en ILIKE $1 OR
-          p.short_description ILIKE $1 OR
-          p.long_description_en ILIKE $1 OR
-          p.long_description ILIKE $1 OR
-          c.name_en ILIKE $1 OR
-          c.name ILIKE $1
+        WHERE ${buildKeywordConditions(productFields)}
         LIMIT 10;
       `;
       
-      const productResult = await doQuery(productSql, [`%${query}%`]);
+      const productResult = await doQuery(productSql, keywordParams);
       console.log('Product matches:', productResult.rows.length);
       
       productResult.rows.forEach((row: any) => {
@@ -65,7 +98,8 @@ Full Description: ${(row.long_description_en || row.long_description || 'N/A').s
         });
       });
 
-      // Strategy 2: Search cities
+      // Strategy 2: Search cities  
+      const cityFields = ['name_en', 'name', 'description_en', 'description', 'country'];
       const citySql = `
         SELECT 
           id,
@@ -77,16 +111,11 @@ Full Description: ${(row.long_description_en || row.long_description || 'N/A').s
           slug_en,
           slug
         FROM public.cities_city
-        WHERE 
-          name_en ILIKE $1 OR
-          name ILIKE $1 OR
-          description_en ILIKE $1 OR
-          description ILIKE $1 OR
-          country ILIKE $1
+        WHERE ${buildKeywordConditions(cityFields)}
         LIMIT 5;
       `;
 
-      const cityResult = await doQuery(citySql, [`%${query}%`]);
+      const cityResult = await doQuery(citySql, keywordParams);
       console.log('City matches:', cityResult.rows.length);
 
       cityResult.rows.forEach((row: any) => {
@@ -103,6 +132,7 @@ ${(row.description_en || row.description || 'No description available').substrin
       });
 
       // Strategy 3: Get booking statistics for matching products
+      const statsFields = ['p.title_en', 'p.title', 'c.name_en', 'c.name'];
       const statsSql = `
         SELECT 
           p.id,
@@ -116,18 +146,14 @@ ${(row.description_en || row.description || 'No description available').substrin
         LEFT JOIN main.tours_tour t ON t.product_id = p.id
         LEFT JOIN main.bookings_booking b ON b.tour_id = t.id
         LEFT JOIN main.bookings_bookingitem bi ON bi.booking_id = b.id
-        WHERE 
-          p.title_en ILIKE $1 OR
-          p.title ILIKE $1 OR
-          c.name_en ILIKE $1 OR
-          c.name ILIKE $1
+        WHERE ${buildKeywordConditions(statsFields)}
         GROUP BY p.id, p.title_en, p.title
         HAVING COUNT(DISTINCT b.id) > 0
         ORDER BY total_bookings DESC
         LIMIT 5;
       `;
 
-      const statsResult = await doQuery(statsSql, [`%${query}%`]);
+      const statsResult = await doQuery(statsSql, keywordParams);
       console.log('Stats matches:', statsResult.rows.length);
 
       statsResult.rows.forEach((row: any) => {
