@@ -13,71 +13,85 @@ export interface KnowledgeSource {
 export class DoPostgresKnowledgeSource implements KnowledgeSource {
   async search(query: string): Promise<KnowledgeChunk[]> {
     try {
-      // First, try to use the RAG unified documents table (already has embeddings and unified text)
-      const ragSql = `
-        SELECT 
-          id,
-          source_table,
-          source_record_id,
-          unified_text,
-          primary_language,
-          metadata
-        FROM main.rag_unified_documents
-        WHERE unified_text ILIKE $1
-        LIMIT 10;
-      `;
-      
-      let result = await doQuery(ragSql, [`%${query}%`]);
-      
-      if (result.rows.length > 0) {
-        return result.rows.map((row: any) => ({
-          source: `DO - ${row.source_table} (${row.primary_language})`,
-          content: row.unified_text.substring(0, 1000), // Limit content length
-          metadata: {
-            id: row.id,
-            source_table: row.source_table,
-            source_record_id: row.source_record_id,
-            language: row.primary_language,
-            ...row.metadata
-          }
-        }));
-      }
-      
-      // Fallback: search products directly if RAG doesn't return results
+      // Search for Products (Tours)
       const productSql = `
         SELECT 
-          id,
-          title_en,
-          title,
-          short_description_en,
-          short_description,
-          long_description_en,
-          long_description,
-          city_id,
-          slug_en,
-          slug
-        FROM main.products_product
+          p.id,
+          p.title_en,
+          p.title,
+          p.short_description_en,
+          p.short_description,
+          p.long_description_en,
+          p.long_description,
+          p.slug_en,
+          p.slug,
+          c.name_en as city_name,
+          c.name as city_name_local
+        FROM main.products_product p
+        LEFT JOIN public.cities_city c ON p.city_id = c.id
         WHERE 
-          title_en ILIKE $1 OR
-          title ILIKE $1 OR
-          short_description_en ILIKE $1 OR
-          short_description ILIKE $1 OR
-          long_description_en ILIKE $1 OR
-          long_description ILIKE $1
+          p.title_en ILIKE $1 OR
+          p.title ILIKE $1 OR
+          p.short_description_en ILIKE $1 OR
+          p.short_description ILIKE $1 OR
+          p.long_description_en ILIKE $1 OR
+          p.long_description ILIKE $1
         LIMIT 5;
       `;
       
-      result = await doQuery(productSql, [`%${query}%`]);
+      console.log('Executing Product Search:', productSql.replace(/\s+/g, ' '), 'Params:', [`%${query}%`]);
+      const productResult = await doQuery(productSql, [`%${query}%`]);
+      console.log('Product Search Results:', productResult.rows.length);
       
-      return result.rows.map((row: any) => ({
+      const productChunks = productResult.rows.map((row: any) => ({
         source: `DO - Product: ${row.title_en || row.title}`,
-        content: `Title: ${row.title_en || row.title}\n\n${row.short_description_en || row.short_description || ''}\n\n${(row.long_description_en || row.long_description || '').substring(0, 500)}`,
+        content: `Title: ${row.title_en || row.title}
+City: ${row.city_name || row.city_name_local || 'Unknown'}
+Description: ${row.short_description_en || row.short_description || ''}
+Details: ${(row.long_description_en || row.long_description || '').substring(0, 500)}...`,
         metadata: {
           id: row.id,
+          type: 'product',
           slug: row.slug_en || row.slug,
-          city_id: row.city_id
+          city: row.city_name || row.city_name_local
         }
       }));
+
+      // Search for Cities
+      const citySql = `
+        SELECT 
+          id,
+          name_en,
+          name,
+          description_en,
+          description,
+          country,
+          slug_en,
+          slug
+        FROM public.cities_city
+        WHERE 
+          name_en ILIKE $1 OR
+          name ILIKE $1 OR
+          description_en ILIKE $1 OR
+          description ILIKE $1
+        LIMIT 3;
+      `;
+
+      const cityResult = await doQuery(citySql, [`%${query}%`]);
+
+      const cityChunks = cityResult.rows.map((row: any) => ({
+        source: `DO - City: ${row.name_en || row.name}`,
+        content: `City: ${row.name_en || row.name}
+Country: ${row.country}
+Description: ${(row.description_en || row.description || '').substring(0, 500)}...`,
+        metadata: {
+          id: row.id,
+          type: 'city',
+          slug: row.slug_en || row.slug
+        }
+      }));
+
+      return [...productChunks, ...cityChunks];
       
     } catch (error) {
       console.error('Error searching DigitalOcean:', error);
